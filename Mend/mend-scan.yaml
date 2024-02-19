@@ -1,0 +1,77 @@
+name: Mend Container Scanning
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 1 * *'
+
+env:
+  MEND_EMAIL: abc
+  MEND_USER_KEY: ${{ secrets.MEND_USER_KEY }}
+  MEND_PRODUCT_KEY: ${{ secrets.MEND_PRODUCT_KEY }}
+  MEND_PROJECT_KEY: ${{ secrets.MEND_PROJECT_KEY }}
+  MEND_URL: ${{ secrets.MEND_URL }}
+
+jobs:
+  MendCliScan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Bastion_proxy
+        shell: bash
+        run: |
+            echo "${{ secrets.bastion_kubeconfig }}" > /tmp/bastion_kubeconfig
+            kubectl port-forward -n tinyproxy XYZloyment/de-bastion-proxy 8888:8888 --kubeconfig=/tmp/bastion_kubeconfig &>/dev/null &
+            sleep 5
+            kubectl get pods -n tinyproxy --kubeconfig=/tmp/bastion_kubeconfig
+
+      - name: AZ cli login
+        shell: bash
+        env:
+            ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID }}
+            ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
+            ARM_TENANT_ID: ${{ vars.ARM_TENANT_ID }}
+            ARM_CLIENT_CERTIFICATE: ${{ secrets.ARM_CLIENT_CERTIFICATE }}
+        run: |
+            echo "${{ secrets.ARM_CLIENT_CERTIFICATE }}" | base64 -d > cert.pfx
+            openssl pkcs12 -in cert.pfx -out cert.pem -nodes -passin pass:
+
+            az login --service-principal -u $ARM_CLIENT_ID -p cert.pem --tenant $ARM_TENANT_ID
+            az account set -s $ARM_SUBSCRIPTION_ID
+
+      - name: Install kubectl
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y kubectl
+
+      - name: Set up Docker
+        run: |
+          sudo apt-get remove docker docker-engine docker.io containerd runc
+          sudo apt-get purge docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-compose
+          sudo rm -rf /etc/bash_completion.d/docker /usr/local/bin/docker-compose /etc/bash_completion.d/docker-compos
+          sudo apt install containerd -y
+          sudo apt install -y docker.io docker-compose
+
+      - name: Mend Scan Control Cluster
+        run: |
+          echo "${{ secrets.XYZ_AKS_WK_EUN_PRD }}" > /tmp/kubeconfig
+          python .github/workflows/mend_scan.py /tmp/kubeconfig
+
+      - name: Mend Scan Worker Cluster
+        run: |
+          echo "${{ secrets.XYZ_AKS_CC_EUN_PRD }}" > /tmp/kubeconfig
+          python .github/workflows/mend_scan.py /tmp/kubeconfig
+
+      - name: Mend Scan Private Cluster
+        run: |
+          echo "${{ secrets.XYZ_AKS_PRIV_CC_EUN_PRD }}" > /tmp/kubeconfig
+          python .github/workflows/mend_scan.py /tmp/kubeconfig
